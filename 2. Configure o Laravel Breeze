@@ -1,0 +1,1 @@
+php artisan breeze:install

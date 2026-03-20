@@ -1,0 +1,16 @@
+namespace App\Http\Middleware;
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+
+class VerifyCsrfToken
+{
+    public function handle(Request $request, \Closure $next)
+    {
+        if ($request->is('api/*')) {
+            return $next($request);
+        }
+
+        return parent::handle($request, $next);
+    }
+}
