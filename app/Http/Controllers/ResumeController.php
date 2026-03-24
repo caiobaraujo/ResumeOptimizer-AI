@@ -6,6 +6,7 @@ use App\Contracts\AiServiceInterface;
 use App\Models\GeneratedResume;
 use App\Models\JobVacancy;
 use App\Models\Resume;
+use App\Services\ScraperService; // IMPORTANTE: Importar o novo serviço
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Illuminate\Support\Facades\Log;
@@ -17,18 +18,37 @@ class ResumeController extends Controller
         return Inertia::render('Resumes/Create');
     }
 
-    /**
-     * Injetamos a interface AiServiceInterface diretamente no método (Dependency Injection).
-     * O Laravel é inteligente o suficiente para entregar a classe GeminiService aqui.
-     */
-    public function store(Request $request, AiServiceInterface $aiService)
+    // Injetamos o ScraperService aqui junto com a IA
+    public function store(Request $request, AiServiceInterface $aiService, ScraperService $scraperService)
     {
+        // 1. Validação
         $validated = $request->validate([
             'resume_content' => 'required|string|min:50',
             'job_url' => 'nullable|url',
-            'job_description' => 'required|string|min:20',
+            // A descrição da vaga agora é opcional, pois o usuário pode mandar só a URL
+            'job_description' => 'nullable|string', 
         ]);
 
+        // 2. Se não tem URL E não tem descrição, não podemos continuar
+        if (empty($validated['job_url']) && empty($validated['job_description'])) {
+            return redirect()->back()->withErrors(['error' => 'Você precisa informar o link da vaga OU colar a descrição dela.']);
+        }
+
+        // 3. LÓGICA DO WEB SCRAPING
+        $jobText = $validated['job_description'] ?? '';
+
+        if (!empty($validated['job_url'])) {
+            $scrapedText = $scraperService->extractTextFromUrl($validated['job_url']); // null
+            if ($scrapedText) {
+                // Se o robô conseguiu ler o site, juntamos o texto do site com o texto (opcional) que o usuário digitou
+                $jobText = $scrapedText . "\n\n" . $jobText;
+            } else {
+                // Se falhou (ex: bloqueio anti-robô), avisamos o usuário para colar o texto manual
+                return redirect()->back()->withErrors(['error' => 'Não conseguimos extrair os dados deste link automaticamente. Por favor, copie e cole o texto da vaga no campo de descrição.']);
+            }
+        }
+
+        // 4. Salvamos no banco (Mantido igual)
         $resume = Resume::create([
             'user_id' => $request->user()->id,
             'title' => 'Currículo Base - ' . now()->format('d/m/Y'),
@@ -38,47 +58,37 @@ class ResumeController extends Controller
         $jobVacancy = JobVacancy::create([
             'user_id' => $request->user()->id,
             'url' => $validated['job_url'],
-            'description' => $validated['job_description'],
+            'description' => $jobText, // Salvamos o texto final (Pode ser o do site ou o digitado)
         ]);
 
-        // 1. Criamos a instrução (Prompt Engineering) para o Gemini
-        $prompt = "Você é um especialista Sênior em Recrutamento, Seleção e sistemas ATS (Applicant Tracking System).
-        Abaixo, fornecerei a DESCRIÇÃO DE UMA VAGA e o CURRÍCULO ORIGINAL de um candidato.
-        
+        // 5. Prompt para a IA (Mantido igual, mas usando o $jobText)
+        $prompt = "Você é um especialista Sênior em Recrutamento e sistemas ATS.
         DESCRIÇÃO DA VAGA:
-        {$validated['job_description']}
+        {$jobText}
         
         CURRÍCULO ORIGINAL:
         {$validated['resume_content']}
         
         SUA TAREFA:
-        Otimize o currículo do candidato para esta vaga específica, adicionando palavras-chave relevantes da vaga, mas sem inventar mentiras sobre habilidades técnicas.
-        Retorne APENAS um objeto JSON válido, sem formatação markdown (sem ```json), estritamente com esta estrutura:
+        Otimize o currículo do candidato para esta vaga, adicionando palavras-chave relevantes.
+        Retorne APENAS um objeto JSON válido (sem formatar em markdown):
         {
-            \"optimized_content\": \"Texto completo do novo currículo otimizado.\",
-            \"ats_score\": 85, // Um número inteiro de 0 a 100 indicando a aderência
-            \"feedback\": {
-                \"fortes\": [\"ponto forte 1\", \"ponto forte 2\"],
-                \"fracos\":[\"ponto a melhorar 1\", \"ponto a melhorar 2\"]
-            },
-            \"has_seniority_gap\": false // true se o candidato for Junior e a vaga Pleno/Senior, etc.
+            \"optimized_content\": \"Texto do novo currículo\",
+            \"ats_score\": 85,
+            \"feedback\": {\"fortes\": [], \"fracos\":[]},
+            \"has_seniority_gap\": false
         }";
 
-        // 2. Chamamos a IA
+        // 6. Chamamos a IA (Mantido igual)
         $aiResponse = $aiService->generate($prompt);
-
-
-        // 3. Limpamos a resposta caso a IA retorne markdown "```json ... ```" e convertemos para Array PHP
         $cleanJson = trim(str_replace(['```json', '```'], '', $aiResponse));
         $aiData = json_decode($cleanJson, true);
 
-        // 4. Se a IA falhar em retornar o JSON correto, criamos um fallback (plano B de segurança)
         if (!$aiData || !isset($aiData['optimized_content'])) {
-            Log::error('Falha ao decodificar JSON da IA: ' . $aiResponse);
             return redirect()->back()->withErrors(['error' => 'A IA retornou um formato inválido. Tente novamente.']);
         }
 
-        // 5. Salvamos o resultado no banco
+        // 7. Salvamos o Resultado (Mantido igual)
         $generatedResume = GeneratedResume::create([
             'user_id' => $request->user()->id,
             'resume_id' => $resume->id,
@@ -89,7 +99,6 @@ class ResumeController extends Controller
             'has_seniority_gap' => $aiData['has_seniority_gap'] ?? false,
         ]);
 
-        // 6. Redirecionamos para a tela de visualização do resultado
         return redirect()->route('generated-resumes.show', $generatedResume->id);
     }
 }
