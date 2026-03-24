@@ -1,8 +1,0 @@
-import { Inertia } from '@inertiajs/inertia';
-import Vue from 'vue';
-
-Vue.use(Inertia);
-
-const app = new Vue({
-    el: '#app',
-});
