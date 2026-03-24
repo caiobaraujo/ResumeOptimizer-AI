@@ -2,23 +2,25 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
 use App\Models\GeneratedResume;
+use Inertia\Inertia;
 
 class GeneratedResumeController extends Controller
 {
-    public function index()
-    {
-        // Lógica para exibir a lista de resumos gerados
-    }
-
     public function show($id)
     {
-        // Lógica para exibir um resumo gerado específico
-    }
+        // Busca o currículo gerado no banco, e traz junto os dados da vaga e do currículo original (Eager Loading)
+        $generatedResume = GeneratedResume::with(['jobVacancy', 'originalResume'])
+            ->findOrFail($id);
 
-    public function destroy($id)
-    {
-        // Lógica para deletar um resumo gerado
+        // Bloqueia o acesso se o currículo não for do usuário logado (Segurança / Autorização)
+        if ($generatedResume->user_id !== auth()->id()) {
+            abort(403, 'Acesso negado.');
+        }
+
+        // Manda os dados para a tela Vue
+        return Inertia::render('GeneratedResumes/Show', [
+            'generatedResume' => $generatedResume
+        ]);
     }
 }
